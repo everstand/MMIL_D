@@ -599,7 +599,6 @@ def train(args, split, save_path):
         val_kendall = float(val_metrics['kendall'])
         val_spearman = float(val_metrics['spearman'])
         val_caption_coverage = float(val_metrics['caption_coverage'])
-
         if val_kendall > max_val_kendall:
             max_val_kendall = val_kendall
             fscore_at_max_kendall = val_fscore
@@ -776,7 +775,6 @@ def validate_rank_loss_args(args) -> None:
             f'Invalid rank_loss={args.rank_loss}; '
             f'expected sparse_pair, listwise_utility, budgeted_pseudo_summary, hybrid_sparse_budget, preference_distill, or none.'
         )
-
 
 def compute_listwise_utility_loss(pred_shot_scores: torch.Tensor,
                                   teacher_utility: torch.Tensor,

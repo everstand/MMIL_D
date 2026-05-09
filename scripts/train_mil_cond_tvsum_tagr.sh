@@ -22,6 +22,7 @@ LAMBDA_AUX="${LAMBDA_AUX:-3.0}"
 RANK_LOSS="${RANK_LOSS:-budgeted_pseudo_summary}"
 SCORE_HEAD="${SCORE_HEAD:-dual}"
 UTILITY_FORMULA="${UTILITY_FORMULA:-semantic_plus_rep}"
+
 LAMBDA_LISTWISE="${LAMBDA_LISTWISE:-0.2}"
 LISTWISE_TEMPERATURE="${LISTWISE_TEMPERATURE:-0.2}"
 LAMBDA_SELECT="${LAMBDA_SELECT:-0.2}"
@@ -41,7 +42,7 @@ NUM_FEATURE="${NUM_FEATURE:-768}"
 NUM_HIDDEN="${NUM_HIDDEN:-128}"
 
 RUN_ROOT="${RUN_ROOT:-models/mil_cond}"
-RUN_TAG="${RUN_TAG:-tvsum_cov_budget_dual_entry_seed${SEED}}"
+RUN_TAG="${RUN_TAG:-tvsum_${UTILITY_FORMULA}_seed${SEED}}"
 MODEL_DIR="${MODEL_DIR:-${RUN_ROOT}/${RUN_TAG}}"
 LOG_FILE="${LOG_FILE:-log_mil_cond.txt}"
 

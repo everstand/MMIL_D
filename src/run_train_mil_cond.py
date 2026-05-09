@@ -197,11 +197,13 @@ def main() -> None:
         split_metrics.append(metrics)
 
         logger.info(
-            'Split %d/%d | val_F1=%.4f | test_F1=%.4f | test_Tau=%.4f | '
-            'test_Rho=%.4f | test_cov=%.4f',
+            'Split %d/%d | val_F1=%.4f | val_Tau=%.4f | val_Rho=%.4f | '
+            'test_F1=%.4f | test_Tau=%.4f | test_Rho=%.4f | test_cov=%.4f',
             split_idx + 1,
             len(splits),
             metrics['val_best_fscore'],
+            metrics['val_kendall_at_best_fscore'],
+            metrics['val_spearman_at_best_fscore'],
             metrics['test_fscore_at_best_fscore'],
             metrics['test_kendall_at_best_fscore'],
             metrics['test_spearman_at_best_fscore'],
