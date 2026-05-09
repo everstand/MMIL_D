@@ -1,0 +1,31 @@
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+__MACOSX/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+
+# Large/generated project artifacts
+custom_data/
+datasets/
+features/
+models/
+diagnostics/
+pseudo_labels/**/*.npy
+pseudo_labels/**/*.npz
+*.mp4
+*.avi
+*.mov
+*.mkv
+*.h5
+*.hdf5
+*.pth
+*.pt
+*.ckpt
+*.log
+*.orig
