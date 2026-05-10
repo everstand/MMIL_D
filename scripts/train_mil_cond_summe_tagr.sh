@@ -21,6 +21,9 @@ LAMBDA_AUX="${LAMBDA_AUX:-2.0}"
 
 RANK_LOSS="${RANK_LOSS:-budgeted_pseudo_summary}"
 SCORE_HEAD="${SCORE_HEAD:-dual}"
+SELECTION_SCORE_SOURCE="${SELECTION_SCORE_SOURCE:-frame}"
+SHOT_HEAD_MODE="${SHOT_HEAD_MODE:-single}"
+SHOT_EVAL_HEAD="${SHOT_EVAL_HEAD:-selection}"
 UTILITY_FORMULA="${UTILITY_FORMULA:-phase1_default}"
 
 SHOT_UTILITY_PATH="${SHOT_UTILITY_PATH:-}"
@@ -97,6 +100,9 @@ PYTHONPATH="${PYTHONPATH}" "${PYTHON_BIN}" src/run_train_mil_cond.py \
   --lambda-aux "${LAMBDA_AUX}" \
   --rank-loss "${RANK_LOSS}" \
   --score-head "${SCORE_HEAD}" \
+  --selection-score-source "${SELECTION_SCORE_SOURCE}" \
+  --shot-head-mode "${SHOT_HEAD_MODE}" \
+  --shot-eval-head "${SHOT_EVAL_HEAD}" \
   --utility-formula "${UTILITY_FORMULA}" \
   --lambda-listwise "${LAMBDA_LISTWISE}" \
   --listwise-temperature "${LISTWISE_TEMPERATURE}" \

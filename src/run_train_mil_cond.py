@@ -60,6 +60,27 @@ def get_parser() -> argparse.ArgumentParser:
         default='single',
         choices=('single', 'dual', 'residual_dual'),
     )
+    parser.add_argument(
+        '--selection-score-source',
+        type=str,
+        default='frame',
+        choices=('frame', 'shot_head'),
+        help='Use sampled-frame selection scores or the explicit shot-level selection head.',
+    )
+    parser.add_argument(
+        '--shot-head-mode',
+        type=str,
+        default='single',
+        choices=('single', 'dual'),
+        help='Use one shot head for all shot scores or separate selection/rank heads.',
+    )
+    parser.add_argument(
+        '--shot-eval-head',
+        type=str,
+        default='selection',
+        choices=('selection', 'rank'),
+        help='When using shot_head scoring, choose which shot head is projected to summary_scores.',
+    )
     parser.add_argument('--shot-utility-path', type=str, default=None)
     parser.add_argument('--text-feature-path', type=str, default=None)
     parser.add_argument('--structured-caption-path', type=str, default=None)
@@ -139,7 +160,9 @@ def main() -> None:
 
     logger.info(
         'Run | dataset=%s | folds=%d | seed=%d | epochs=%d | lr=%.2e | wd=%.2e | '
-        'score_head=%s | rank_loss=%s | lambda_pair=%.3g | pair_margin=%.3g | '
+        'score_head=%s | selection_score_source=%s | shot_head_mode=%s | '
+        'shot_eval_head=%s | rank_loss=%s | '
+        'lambda_pair=%.3g | pair_margin=%.3g | '
         'lambda_listwise=%.3g | lambda_select=%.3g | lambda_budget=%.3g | '
         'utility_formula=%s | tau=%.3g | summary_budget=%.3g | neg_q=%.3g | '
         'gate=%s | margin_thr=%.3g | lambda_align=%.3g | lambda_aux=%.3g | '
@@ -152,6 +175,9 @@ def main() -> None:
         args.lr,
         args.weight_decay,
         args.score_head,
+        args.selection_score_source,
+        args.shot_head_mode,
+        args.shot_eval_head,
         args.rank_loss,
         args.lambda_pair,
         args.pair_margin,

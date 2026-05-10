@@ -10,6 +10,10 @@ __pycache__/
 .pytest_cache/
 .coverage
 
+# Agent/internal state
+.agents/
+.agent/
+
 # Large/generated project artifacts
 custom_data/
 datasets/

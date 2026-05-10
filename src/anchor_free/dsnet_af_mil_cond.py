@@ -37,17 +37,25 @@ class DSNetAFMILCond(nn.Module):
                  num_hidden: int,
                  num_head: int,
                  num_classes: int,
-                 score_head: str = 'single'):
+                 score_head: str = 'single',
+                 use_shot_head: bool = False,
+                 shot_head_mode: str = 'single'):
         super().__init__()
 
         if score_head not in ('single', 'dual', 'residual_dual'):
             raise ValueError(
                 f'Invalid score_head={score_head}; expected single, dual, or residual_dual.'
             )
+        if shot_head_mode not in ('single', 'dual'):
+            raise ValueError(
+                f'Invalid shot_head_mode={shot_head_mode}; expected single or dual.'
+            )
 
         self.num_classes = num_classes
         self.num_feature = num_feature
         self.score_head = score_head
+        self.use_shot_head = bool(use_shot_head)
+        self.shot_head_mode = shot_head_mode
 
         self.base_model = build_base_model(base_model, num_feature, num_head)
 
@@ -76,6 +84,26 @@ class DSNetAFMILCond(nn.Module):
                 nn.init.zeros_(self.fc_select.bias)
         else:
             self.fc_select = None
+
+        if self.use_shot_head:
+            self.shot_score_head = nn.Sequential(
+                nn.LayerNorm(num_feature),
+                nn.Linear(num_feature, num_hidden),
+                nn.ReLU(inplace=True),
+                nn.Linear(num_hidden, 1),
+            )
+            if self.shot_head_mode == 'dual':
+                self.shot_rank_head = nn.Sequential(
+                    nn.LayerNorm(num_feature),
+                    nn.Linear(num_feature, num_hidden),
+                    nn.ReLU(inplace=True),
+                    nn.Linear(num_hidden, 1),
+                )
+            else:
+                self.shot_rank_head = None
+        else:
+            self.shot_score_head = None
+            self.shot_rank_head = None
 
     def forward(self,
                 x: torch.Tensor,
@@ -205,3 +233,48 @@ class DSNetAFMILCond(nn.Module):
                                text_cond_mask: torch.Tensor = None) -> torch.Tensor:
         _, _, summary_scores, _, _, _ = self(seq, text_cond, text_cond_mask)
         return summary_scores
+
+    def predict_shot_scores(self,
+                            frame_repr: torch.Tensor,
+                            overlaps: torch.Tensor,
+                            shot_lengths: torch.Tensor,
+                            head: str = 'selection') -> torch.Tensor:
+        """Predict direct shot scores from frame representations.
+
+        Shape contract:
+            frame_repr: [T, D]
+            overlaps: [S, T]
+            shot_lengths: [S]
+            return: [S]
+        """
+        if self.shot_score_head is None:
+            raise RuntimeError('Shot score head is disabled for this model.')
+        if head not in ('selection', 'rank'):
+            raise ValueError(f'Invalid shot score head={head}; expected selection or rank.')
+        if frame_repr.ndim != 2:
+            raise ValueError(f'Expected frame_repr shape [T, D], got {tuple(frame_repr.shape)}')
+        if overlaps.ndim != 2:
+            raise ValueError(f'Expected overlaps shape [S, T], got {tuple(overlaps.shape)}')
+        if shot_lengths.ndim != 1:
+            raise ValueError(f'Expected shot_lengths shape [S], got {tuple(shot_lengths.shape)}')
+        if frame_repr.shape[1] != self.num_feature:
+            raise ValueError(
+                f'frame_repr feature dim mismatch: got {frame_repr.shape[1]}, expected {self.num_feature}'
+            )
+        if overlaps.shape[1] != frame_repr.shape[0]:
+            raise ValueError(
+                f'overlaps/frame_repr time mismatch: {overlaps.shape[1]} vs {frame_repr.shape[0]}'
+            )
+        if overlaps.shape[0] != shot_lengths.shape[0]:
+            raise ValueError(
+                f'overlaps/shot_lengths shot mismatch: {overlaps.shape[0]} vs {shot_lengths.shape[0]}'
+            )
+
+        shot_repr = torch.matmul(overlaps, frame_repr) / shot_lengths.clamp_min(1.0).unsqueeze(1)
+        if head == 'rank':
+            if self.shot_rank_head is None:
+                raise RuntimeError('Shot rank head is disabled; use shot_head_mode=dual.')
+            shot_logits = self.shot_rank_head(shot_repr).squeeze(-1)
+        else:
+            shot_logits = self.shot_score_head(shot_repr).squeeze(-1)
+        return torch.sigmoid(shot_logits)

@@ -19,13 +19,18 @@ logger = logging.getLogger(__name__)
 
 def train(args, split, save_path):
     logger.debug(
-        'Loss weights | score_head=%s | rank_loss=%s | lambda_pair=%s | pair_margin=%s | '
+        'Loss weights | score_head=%s | selection_score_source=%s | '
+        'shot_head_mode=%s | shot_eval_head=%s | rank_loss=%s | '
+        'lambda_pair=%s | pair_margin=%s | '
         'lambda_listwise=%s | listwise_temperature=%s | '
         'lambda_select=%s | lambda_budget=%s | summary_budget=%s | neg_q=%s | '
         'gate=%s | margin_thr=%s | utility_formula=%s | lambda_align=%s | lambda_aux=%s | '
         'coverage_aware=%s | coverage_min=%s | text_feature_path=%s | '
         'structured_caption_path=%s | shot_utility_path=%s',
         args.score_head,
+        args.selection_score_source,
+        args.shot_head_mode,
+        args.shot_eval_head,
         args.rank_loss,
         args.lambda_pair,
         args.pair_margin,
@@ -144,6 +149,8 @@ def train(args, split, save_path):
         num_head=args.num_head,
         num_classes=num_classes,
         score_head=args.score_head,
+        use_shot_head=args.selection_score_source == 'shot_head',
+        shot_head_mode=args.shot_head_mode,
     ).to(args.device)
 
     optimizer = torch.optim.Adam(
@@ -201,6 +208,7 @@ def train(args, split, save_path):
             'num_negative_shots',
             'teacher_gate_weight',
             'teacher_margin',
+            'teacher_student_shot_tau',
             'caption_coverage_ratio',
             'coverage_loss_weight',
             'num_valid_text_cond',
@@ -262,7 +270,7 @@ def train(args, split, save_path):
                 summary_scores,
                 bag_logits,
                 summary_feat,
-                _,
+                pre_cross_frame_repr,
             ) = model(
                 seq_tensor,
                 text_cond_tensor,
@@ -287,11 +295,30 @@ def train(args, split, save_path):
                 overlaps=overlaps,
                 shot_lengths=shot_lengths,
             )
-            selection_shot_scores = aggregate_frame_scores_to_shot_scores(
+            frame_selection_shot_scores = aggregate_frame_scores_to_shot_scores(
                 frame_scores=summary_scores,
                 overlaps=overlaps,
                 shot_lengths=shot_lengths,
             )
+            if args.selection_score_source == 'shot_head':
+                selection_shot_scores = model.predict_shot_scores(
+                    frame_repr=pre_cross_frame_repr,
+                    overlaps=overlaps,
+                    shot_lengths=shot_lengths,
+                    head='selection',
+                )
+                if args.shot_head_mode == 'dual':
+                    ranking_shot_scores = model.predict_shot_scores(
+                        frame_repr=pre_cross_frame_repr,
+                        overlaps=overlaps,
+                        shot_lengths=shot_lengths,
+                        head='rank',
+                    )
+                else:
+                    ranking_shot_scores = selection_shot_scores
+            else:
+                selection_shot_scores = frame_selection_shot_scores
+                ranking_shot_scores = selection_shot_scores
 
             pair_loss = seq_tensor.new_zeros(())
             weighted_pair_loss = seq_tensor.new_zeros(())
@@ -306,6 +333,7 @@ def train(args, split, save_path):
             num_negative_shots = 0.0
             teacher_gate_weight = 1.0
             teacher_margin = 0.0
+            teacher_student_shot_tau = 0.0
 
             if args.rank_loss in ('sparse_pair', 'hybrid_sparse_budget'):
                 sparse_scores = pool_shot_scores if args.rank_loss == 'hybrid_sparse_budget' else pred_shot_scores
@@ -456,10 +484,10 @@ def train(args, split, save_path):
                     pref_record['pair_confidence'], dtype=torch.float32, device=args.device
                 )
 
-                if teacher_scores.shape[0] != selection_shot_scores.shape[0]:
+                if teacher_scores.shape[0] != ranking_shot_scores.shape[0]:
                     raise ValueError(
                         f'Preference teacher length mismatch for sample {key}: '
-                        f'teacher={teacher_scores.shape[0]} vs pred={selection_shot_scores.shape[0]}'
+                        f'teacher={teacher_scores.shape[0]} vs pred={ranking_shot_scores.shape[0]}'
                     )
                 if inclusion_prob.shape[0] != selection_shot_scores.shape[0]:
                     raise ValueError(
@@ -473,7 +501,7 @@ def train(args, split, save_path):
                     )
 
                 pair_loss = compute_preference_pair_rank_loss(
-                    selection_shot_scores=selection_shot_scores,
+                    selection_shot_scores=ranking_shot_scores,
                     pair_i=pair_i,
                     pair_j=pair_j,
                     pair_label=pair_label,
@@ -481,7 +509,7 @@ def train(args, split, save_path):
                     margin=args.pref_pair_margin,
                 )
                 listwise_loss = compute_preference_listwise_loss(
-                    selection_shot_scores=selection_shot_scores,
+                    selection_shot_scores=ranking_shot_scores,
                     teacher_scores=teacher_scores,
                     temperature=args.pref_list_temperature,
                 )
@@ -509,8 +537,13 @@ def train(args, split, save_path):
                 num_negative_shots = float((inclusion_prob <= 0.20).sum().item())
                 teacher_gate_weight = float(teacher_confidence_tensor.mean().detach().item())
                 teacher_margin = float(pair_confidence.mean().detach().item()) if pair_confidence.numel() > 0 else 0.0
+                teacher_student_shot_tau = compute_teacher_student_shot_tau(
+                    student_scores=ranking_shot_scores,
+                    teacher_scores=teacher_scores,
+                )
 
                 assert_finite_tensor('selection_shot_scores', selection_shot_scores, key)
+                assert_finite_tensor('ranking_shot_scores', ranking_shot_scores, key)
                 assert_finite_tensor('preference_teacher_scores', teacher_scores, key)
                 assert_finite_tensor('preference_inclusion_prob', inclusion_prob, key)
                 assert_finite_tensor('preference_pair_loss', pair_loss.unsqueeze(0), key)
@@ -589,12 +622,19 @@ def train(args, split, save_path):
                 num_negative_shots=num_negative_shots,
                 teacher_gate_weight=teacher_gate_weight,
                 teacher_margin=teacher_margin,
+                teacher_student_shot_tau=teacher_student_shot_tau,
                 caption_coverage_ratio=caption_coverage_ratio_value,
                 coverage_loss_weight=float(coverage_loss_weight.detach().item()),
                 num_valid_text_cond=num_valid_text_cond,
             )
 
-        val_metrics = evaluate_mil_cond(model=model, val_loader=val_loader, device=args.device)
+        val_metrics = evaluate_mil_cond(
+            model=model,
+            val_loader=val_loader,
+            device=args.device,
+            selection_score_source=args.selection_score_source,
+            shot_eval_head=args.shot_eval_head,
+        )
         val_fscore = float(val_metrics['fscore'])
         val_kendall = float(val_metrics['kendall'])
         val_spearman = float(val_metrics['spearman'])
@@ -619,7 +659,8 @@ def train(args, split, save_path):
 
         logger.info(
             'Epoch %03d/%03d | loss=%.4f | rank=%.4f | val_F1=%.4f | '
-            'val_Tau=%.4f | val_Rho=%.4f | val_cov=%.4f | best_val_F1=%.4f',
+            'val_Tau=%.4f | val_Rho=%.4f | val_cov=%.4f | best_val_F1=%.4f | '
+            'ts_shot_Tau=%.4f',
             epoch + 1,
             args.max_epoch,
             stats.loss,
@@ -629,6 +670,7 @@ def train(args, split, save_path):
             val_spearman,
             val_caption_coverage,
             best_val_fscore,
+            stats.teacher_student_shot_tau,
         )
 
         logger.debug(
@@ -636,7 +678,7 @@ def train(args, split, save_path):
             'select=%.4f/%.4f | budget=%.4f/%.4f | '
             'align=%.4f/%.4f | bag=%.4f/%.4f | '
             'aux_active=%.4f | aux_skipped=%.4f | sup_shots=%.4f | '
-            'pos=%.4f | neg=%.4f | gate=%.4f | margin=%.4f | '
+            'pos=%.4f | neg=%.4f | gate=%.4f | margin=%.4f | ts_tau=%.4f | '
             'cap_cov=%.4f | cov_w=%.4f | valid_text=%.4f | '
             'val_max_Tau=%.4f | val_max_Rho=%.4f | '
             'Tau@best_F1=%.4f | Rho@best_F1=%.4f | F1@max_Tau=%.4f | F1@max_Rho=%.4f',
@@ -661,6 +703,7 @@ def train(args, split, save_path):
             stats.num_negative_shots,
             stats.teacher_gate_weight,
             stats.teacher_margin,
+            stats.teacher_student_shot_tau,
             stats.caption_coverage_ratio,
             stats.coverage_loss_weight,
             stats.num_valid_text_cond,
@@ -672,9 +715,30 @@ def train(args, split, save_path):
             fscore_at_max_spearman,
         )
 
-    test_at_best_fscore = evaluate_checkpoint(model, save_path, test_loader, args.device)
-    test_at_max_kendall = evaluate_checkpoint(model, kendall_save_path, test_loader, args.device)
-    test_at_max_spearman = evaluate_checkpoint(model, spearman_save_path, test_loader, args.device)
+    test_at_best_fscore = evaluate_checkpoint(
+        model,
+        save_path,
+        test_loader,
+        args.device,
+        args.selection_score_source,
+        args.shot_eval_head,
+    )
+    test_at_max_kendall = evaluate_checkpoint(
+        model,
+        kendall_save_path,
+        test_loader,
+        args.device,
+        args.selection_score_source,
+        args.shot_eval_head,
+    )
+    test_at_max_spearman = evaluate_checkpoint(
+        model,
+        spearman_save_path,
+        test_loader,
+        args.device,
+        args.selection_score_source,
+        args.shot_eval_head,
+    )
 
     return {
         'val_best_fscore': float(best_val_fscore),
@@ -704,6 +768,20 @@ def validate_rank_loss_args(args) -> None:
         raise ValueError(
             f'Invalid score_head={args.score_head}; expected single, dual, or residual_dual.'
         )
+    if args.selection_score_source not in ('frame', 'shot_head'):
+        raise ValueError(
+            f'Invalid selection_score_source={args.selection_score_source}; expected frame or shot_head.'
+        )
+    if args.shot_head_mode not in ('single', 'dual'):
+        raise ValueError(
+            f'Invalid shot_head_mode={args.shot_head_mode}; expected single or dual.'
+        )
+    if args.shot_eval_head not in ('selection', 'rank'):
+        raise ValueError(
+            f'Invalid shot_eval_head={args.shot_eval_head}; expected selection or rank.'
+        )
+    if args.selection_score_source == 'shot_head' and args.shot_eval_head == 'rank' and args.shot_head_mode != 'dual':
+        raise ValueError('--shot-eval-head rank requires --shot-head-mode dual.')
     if not (0.0 <= args.coverage_loss_min_weight <= 1.0):
         raise ValueError(
             f'Invalid coverage_loss_min_weight={args.coverage_loss_min_weight}; '
@@ -1007,10 +1085,50 @@ def compute_budget_regularizer(selection_shot_scores: torch.Tensor,
     return F.smooth_l1_loss(predicted_budget_ratio, target_budget)
 
 
-def evaluate_checkpoint(model, ckpt_path, test_loader, device: str):
+def compute_teacher_student_shot_tau(student_scores: torch.Tensor,
+                                     teacher_scores: torch.Tensor,
+                                     eps: float = 1e-8) -> float:
+    """Pairwise Kendall-style monitor between predicted and teacher shot scores."""
+    if student_scores.ndim != 1 or teacher_scores.ndim != 1:
+        raise ValueError('student_scores and teacher_scores must be 1D tensors.')
+    if student_scores.shape[0] != teacher_scores.shape[0]:
+        raise ValueError('Shot count mismatch in compute_teacher_student_shot_tau.')
+    if student_scores.shape[0] < 2:
+        return 0.0
+
+    student_detached = student_scores.detach()
+    teacher_detached = teacher_scores.detach()
+    diff_student = student_detached.unsqueeze(0) - student_detached.unsqueeze(1)
+    diff_teacher = teacher_detached.unsqueeze(0) - teacher_detached.unsqueeze(1)
+    upper = torch.triu(
+        torch.ones_like(diff_student, dtype=torch.bool),
+        diagonal=1,
+    )
+    valid = upper & (diff_student.abs() > eps) & (diff_teacher.abs() > eps)
+    num_valid = int(valid.sum().item())
+    if num_valid == 0:
+        return 0.0
+
+    agreement = torch.sign(diff_student[valid] * diff_teacher[valid])
+    tau = agreement.mean()
+    return float(tau.item())
+
+
+def evaluate_checkpoint(model,
+                        ckpt_path,
+                        test_loader,
+                        device: str,
+                        selection_score_source: str = 'frame',
+                        shot_eval_head: str = 'selection'):
     state_dict = torch.load(str(ckpt_path), map_location=device)
     model.load_state_dict(state_dict)
-    return evaluate_mil_cond(model=model, val_loader=test_loader, device=device)
+    return evaluate_mil_cond(
+        model=model,
+        val_loader=test_loader,
+        device=device,
+        selection_score_source=selection_score_source,
+        shot_eval_head=shot_eval_head,
+    )
 
 
 def infer_single_dataset_name(keys):
